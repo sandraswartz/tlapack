@@ -21,6 +21,37 @@ add_custom_command(
     "${CMAKE_CURRENT_BINARY_DIR}/geqr2/example_geqr2${CMAKE_EXECUTABLE_SUFFIX}"
     && echo ""
 )
+
+# add the example qrdecomp
+add_subdirectory( qrdecomp )
+add_custom_command(
+  OUTPUT run-all-examples-cmd APPEND
+  COMMAND
+    echo "- example_qrdc ----------------" &&
+    "${CMAKE_CURRENT_BINARY_DIR}/qrdecomp/example_qrdc${CMAKE_EXECUTABLE_SUFFIX}"
+    && echo ""
+)
+
+add_subdirectory( geqp2 )
+add_custom_command(
+  OUTPUT run-all-examples-cmd APPEND
+  COMMAND
+    echo "- geqp2_colpiv ----------------" &&
+    "${CMAKE_CURRENT_BINARY_DIR}/geqp2/geqp2_colpiv${CMAKE_EXECUTABLE_SUFFIX}"
+    && echo ""
+)
+
+
+# # add the example_my_geqr2
+# add_subdirectory( my_geqr2 )
+# add_custom_command(
+#   OUTPUT run-all-examples-cmd APPEND
+#   COMMAND
+#     echo "- example_my_geqr2 ----------------" &&
+#     "${CMAKE_CURRENT_BINARY_DIR}/geqr2/example_my_geqr2${CMAKE_EXECUTABLE_SUFFIX}"
+#     && echo ""
+# )
+
 # add the example geqrtr
 add_subdirectory( geqrtr )
 add_custom_command(

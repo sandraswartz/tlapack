@@ -44,7 +44,7 @@ void printMatrix(const matrix_t& A)
 
 //------------------------------------------------------------------------------
 template <typename T>
-void run(size_t m, size_t n, size_t r)
+void run(size_t m, size_t n, size_t r, double angle_degrees)
 {
     using std::size_t;
     using matrix_t = tlapack::LegacyMatrix<T>;
@@ -61,6 +61,7 @@ void run(size_t m, size_t n, size_t r)
     // Arrays
     std::vector<T> tau(n);
 
+    r = n;
     // Matrix
     std::vector<T> A_;
     auto A = new_matrix(A_, m, n);
@@ -89,14 +90,35 @@ void run(size_t m, size_t n, size_t r)
 
     // Generate two random matricies C, size mxr and D, size rxn,
     // and compute A_orig = C*D, which has rank r.
+    // for (size_t j = 0; j < r; ++j) {
+    //     for (size_t i = 0; i < m; ++i)
+    //         C(i, j) = static_cast<T>(rand()) / static_cast<T>(RAND_MAX);
+    // }
+    // for (size_t j = 0; j < n; ++j) {
+    //     for (size_t i = 0; i < r; ++i)
+    //         D(i, j) = static_cast<T>(rand()) / static_cast<T>(RAND_MAX);
+    // }
+
+
+    double angle = angle_degrees * M_PI / 180.0; 
+    T s_angle = static_cast<T>(std::sin(angle));
+    T c = static_cast<T>(std::cos(angle));
+
+    tlapack::laset(tlapack::Uplo::General, T(0), T(0), C);
+    
+    // 2. Set the diagonal elements to exponentially increasing powers of s_angle, starting from s_angle^0 = 1, s_angle^1 = s_angle, s_angle^2 = s_angle*s_angle, ..., s_angle^(r-1).
+    // This ensures that the columns of C are linearly independent and have varying magnitudes.
     for (size_t j = 0; j < r; ++j) {
-        for (size_t i = 0; i < m; ++i)
-            C(i, j) = static_cast<T>(rand()) / static_cast<T>(RAND_MAX);
+        C(j, j) = std::pow(s_angle, j);
     }
-    for (size_t j = 0; j < n; ++j) {
-        for (size_t i = 0; i < r; ++i)
-            D(i, j) = static_cast<T>(rand()) / static_cast<T>(RAND_MAX);
-    }
+
+    //now generate matrix D, which is used to compute A_orig = C*D. elements on diagonal are 1, above -c, with c being cos of a random angle between 0 and pi/2, and below is 0. This is to make sure that A_orig has rank r, and the first r columns of A_orig are linearly independent.
+    tlapack::laset(tlapack::Uplo::General, T(0), T(0), D);
+
+    tlapack::laset(tlapack::Uplo::Upper, -c, T(1), D);
+
+
+
     tlapack::gemm(tlapack::Op::NoTrans, tlapack::Op::NoTrans, T(1), C, D, T(0),
                   A_orig);
 
@@ -207,13 +229,20 @@ void run(size_t m, size_t n, size_t r)
     // Extract the upper-triangular R from the QR factorization for comparison.
     tlapack::lacpy(tlapack::UPPER_TRIANGLE, B, R);
 
+    // make all elements below the diagonal of A and A_perm zero for display
+    // (only strict lower triangle), preserving diagonal values.
+    for (idx_t j = 0; j < n; ++j) {
+        for (idx_t i = j + 1; i < m; ++i) {
+            A_perm(i, j) = T(0);
+            A(i, j) = T(0);
+        }
+    }
+
     if (verbose) {
         std::cout << std::endl << "AP (final permuted matrix) =";
         printMatrix(A_perm);
         std::cout << std::endl << "R from geqr2 (upper triangle) =";
         printMatrix(R);
-        std::cout << std::endl << "Householder form of QR factorization =";
-        printMatrix(B);
         std::cout << std::endl;
 
         printMatrix(A);
@@ -224,19 +253,21 @@ void run(size_t m, size_t n, size_t r)
 int main(int argc, char** argv)
 {
     int m, n, r;
+    double angle_degrees;
 
     // Default arguments
-    m = (argc < 2) ? 7 : atoi(argv[1]);
-    n = (argc < 3) ? 5 : atoi(argv[2]);
-    r = (argc < 4) ? 3 : atoi(argv[3]);
+    m = (argc < 2) ? 6 : atoi(argv[1]);
+    n = (argc < 3) ? 6 : atoi(argv[2]);
+    r = (argc < 4) ? n-1 : atoi(argv[3]);
+    angle_degrees = (argc < 5) ? 45.0 : atof(argv[4]);
 
     srand(3);  // Init random seed
 
     std::cout.precision(5);
     std::cout << std::scientific << std::showpos;
 
-    printf("run< float  >( %d, %d, %d )", m, n, r);
-    run<float>(m, n, r);
+    printf("run< float  >( %d, %d, %d, %f )", m, n, r, angle_degrees);
+    run<float>(m, n, r, angle_degrees);
     printf("-----------------------\n");
 
     // printf("run< double >( %d, %d )", m, n);
