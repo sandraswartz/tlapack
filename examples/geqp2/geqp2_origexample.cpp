@@ -14,23 +14,20 @@
 #include <tlapack/lapack/larf.hpp>
 #include <tlapack/lapack/larfg.hpp>
 #include <tlapack/lapack/laset.hpp>
-#include <tlapack/lapack/ung2r.hpp>  
+#include <tlapack/lapack/ung2r.hpp>  //get rid of?
 #include <tlapack/lapack/unmqr.hpp>
 
 // C++ headers
 #include <algorithm>
-#include <chrono> 
-#include <cmath>
+#include <chrono>  // for high_resolution_clock
 #include <iostream>
-#include <limits>
 #include <memory>
 #include <numeric>
 #include <vector>
 
 //------------------------------------------------------------------------------
 
-// Print the contents of a matrix to the console.
-// This is just a small helper for debugging and visual checks.
+/// Print matrix A in the standard output
 template <typename matrix_t>
 void printMatrix(const matrix_t& A)
 {
@@ -45,10 +42,6 @@ void printMatrix(const matrix_t& A)
     }
 }
 
-// Check a QR factorization with column pivoting.
-// This function builds the permuted input matrix AP, extracts R from the
-// Householder output V, forms the explicit Q matrix, and then measures
-// reconstruction and orthogonality errors.
 template <typename matrixA_t,
           typename matrixV_t,
           typename vectorT_t,
@@ -67,8 +60,7 @@ inline void check(matrixA_t& A,
     // Functors for creating new matrices
     tlapack::Create<matrixA_t> new_matrix;
 
-    // Build the permuted input matrix AP = A * P, where P is the column permutation.
-    // We only store the permuted columns, not an explicit permutation matrix.
+    // Permute the columns of A according to perm into a temporary AP matrix.
     std::vector<T> A_perm_(m * n);
     auto A_perm = new_matrix(A_perm_, m, n);
     for (idx_t j = 0; j < n; ++j) {
@@ -77,32 +69,36 @@ inline void check(matrixA_t& A,
         }
     }
 
-    // Extract R from the upper triangle of V.
-    // V contains the Householder output from the QR factorization.
+    // Copy the upper-triangular part of V into R.
+    // Zero the full matrix first so lower triangle does not contain garbage.
     std::vector<T> R_(n * n);
     auto R = new_matrix(R_, n, n);
     tlapack::laset(tlapack::GENERAL, T(0.0), T(0.0), R);
     tlapack::lacpy(tlapack::UPPER_TRIANGLE, V, R);
 
-    // Form the explicit orthogonal matrix Q from the Householder reflectors stored in V.
+    // print the upper-triangular R from qrbg
+    // std::cout << std::endl << "R_check =";
+    // printMatrix(R);
+    // std::cout << std::endl;
+
+    // Form the explicit orthogonal matrix Q from the Householder factors.
     std::vector<T> Q_(m * m);
     auto Q = new_matrix(Q_, m, m);
     tlapack::lacpy(tlapack::GENERAL, V, Q);
     tlapack::ung2r(Q, tau);
 
-    // Print the full Q matrix for manual inspection.
+    // print the orthogonal Q from qrbg
     std::cout << std::endl << "Q_check =";
     printMatrix(Q);
     std::cout << std::endl;
 
-    // Check how well Q * R reconstructs the permuted input AP.
-    // After this call, A_perm stores AP - Q*R.
+    // Compute the reconstruction accuracy ||AP - Q*R||.
     tlapack::gemm(tlapack::Op::NoTrans, tlapack::Op::NoTrans, T(-1.0), Q, R,
                   T(1.0), A_perm);
 
     real_t recon_error = tlapack::lange(tlapack::FROB_NORM, A_perm);
 
-    // Check the orthogonality of Q by computing I - Q^T * Q.
+    // Compute the orthogonality error ||I - Q^H Q||.
     std::vector<T> work_;
     auto work = new_matrix(work_, m, m);
     tlapack::laset(tlapack::GENERAL, T(0.0), T(1.0), work);
@@ -116,93 +112,6 @@ inline void check(matrixA_t& A,
     std::cout << "Orthogonality error ||I - Q^H Q|| = " << orthogonality_error
               << std::endl;
 }
-
-// Stewart QR with column pivoting.
-// This routine implements the Stewart-style QRCP algorithm, which updates
-// column norms incrementally and refreshes them when needed.
-template <typename matrix_t, typename T>
-inline void qr_stewart(matrix_t& A, 
-    std::vector<T>& tau, 
-    std::vector<size_t>& perm)
-    {
-    using idx_t = tlapack::size_type<matrix_t>;
-    using real_t = tlapack::real_type<T>;
-    using range = tlapack::pair<idx_t, idx_t>;
-
-    const idx_t m = tlapack::nrows(A);
-    const idx_t n = tlapack::ncols(A);
-
-    std::vector<T> gamma(n);      // current column norm estimates
-    std::vector<T> gamma_init(n); // baseline column norms for refresh decisions
-
-    // Set the two Stewart thresholds used for refreshing column norms.
-    const real_t eps = std::numeric_limits<real_t>::epsilon();
-    const real_t tau1 = std::sqrt(eps);          // re-compute norm if it becomes very small
-    const real_t tau2 = static_cast<real_t>(0.05); // refresh norm if the estimate loses accuracy
-
-    // Compute the initial 2-norm of each column and save it as a baseline.
-    for (idx_t j = 0; j < n; ++j) {
-        gamma[j] = tlapack::nrm2(slice(A, range(0, m), j));
-        gamma_init[j] = gamma[j];
-    }
-
-    // Perform the Stewart QRCP loop over each column k.
-    const idx_t k_max = std::min(m, n);
-    for (idx_t k = 0; k < k_max; ++k) {
-        // Choose the pivot column with the largest current norm.
-        idx_t pivot = k;
-        real_t max_norm = gamma[k];
-        for (idx_t j = k + 1; j < n; ++j) {
-            if (gamma[j] > max_norm) {
-                max_norm = gamma[j];
-                pivot = j;
-            }
-        }
-
-        if (pivot != k) {
-            for (idx_t i = 0; i < m; ++i) {
-                std::swap(A(i, k), A(i, pivot));
-            }
-            std::swap(gamma[k], gamma[pivot]);
-            std::swap(gamma_init[k], gamma_init[pivot]);
-            std::swap(perm[k], perm[pivot]);
-            std::swap(tau[k], tau[pivot]);
-        }
-
-        auto col_k = slice(A, range(k, m), k);
-        tlapack::larfg(tlapack::Direction::Forward, tlapack::StoreV::Columnwise,
-                       col_k, tau[k]);
-
-        if (k < n - 1) {
-            auto A_trailing = slice(A, range(k, m), range(k + 1, n));
-            tlapack::larf(tlapack::Side::Left, tlapack::Direction::Forward,
-                          tlapack::StoreV::Columnwise, col_k, tau[k],
-                          A_trailing);
-        }
-
-        for (idx_t j = k + 1; j < n; ++j) {
-            if (gamma[j] > static_cast<T>(0.0)) {
-                const real_t r_kj = std::abs(A(k, j));
-                const real_t ratio = r_kj / gamma[j];
-                real_t gamma_new = ratio < real_t(1.0)
-                    ? gamma[j] * std::sqrt(real_t(1.0- ratio * ratio))
-                    : real_t(0.0);
-
-                if (gamma_new / gamma_init[j] <= tau1) {
-                    gamma[j] = tlapack::nrm2(slice(A, range(k + 1, m), j));
-                    gamma_init[j] = gamma[j];
-                } else if (gamma[j] > real_t(0) && gamma_new / gamma[j] <= tau2) {
-                    gamma[j] = tlapack::nrm2(slice(A, range(k + 1, m), j));
-                } else {
-                    gamma[j] = gamma_new;
-                }
-            } else {
-                gamma[j] = static_cast<T>(0.0);
-            }
-        }
-    }
-}
-
 //------------------------------------------------------------------------------
 template <typename matrix_t, typename T>
 inline void qr_bg(matrix_t& A, std::vector<T>& tau, std::vector<size_t>& perm)
@@ -225,30 +134,25 @@ inline void qr_bg(matrix_t& A, std::vector<T>& tau, std::vector<size_t>& perm)
 
     std::vector<T> s(n);
 
-    // Businger-Golub QR with column pivoting.
-    // This is the classic QRCP algorithm that chooses the largest column
-    // norm at each step and applies Householder reflectors.
+    // Start of the sorting and permutation loop
     for (size_t k = 0; k < n; ++k) {
-        // Find the pivot column with largest estimated norm in the active block.
+        // Find the pivot column with largest norm in the active block.
         pivot = k;
         max_norm = static_cast<real_t>(0);
         norm = static_cast<real_t>(0);
 
         if (k == 0) {
-            // On the first step, compute the full norm of each column.
             for (idx_t j = k; j < n; ++j) {
                 A_j = slice(A, range(0, m), j);
                 s[j] = tlapack::nrm2(A_j);
             }
         }
         else {
-            // After the first step, update the squared column norms cheaply.
             for (idx_t j = k; j < n; ++j) {
                 s[j] -= (A(k, j) * A(k, j));
             }
         }
 
-        // Pick the largest remaining column as the next pivot.
         max_norm = s[k];
         pivot = k;
         for (idx_t j = k + 1; j < n; ++j) {
@@ -258,7 +162,7 @@ inline void qr_bg(matrix_t& A, std::vector<T>& tau, std::vector<size_t>& perm)
             }
         }
 
-        // Swap the selected pivot column into position k.
+        //
         if (pivot != k) {
             for (idx_t i = 0; i < m; ++i) {
                 std::swap(A(i, k), A(i, pivot));
@@ -280,10 +184,6 @@ inline void qr_bg(matrix_t& A, std::vector<T>& tau, std::vector<size_t>& perm)
     }
 }
 
-
-// Build a test matrix, run two QRCP methods, and print the results.
-// This routine exercises both Businger-Golub and Stewart pivoting, then
-// verifies the final permuted QR factorization.
 template <typename T>
 void run(size_t m, size_t n, size_t r)
 {
@@ -297,30 +197,29 @@ void run(size_t m, size_t n, size_t r)
     tlapack::Create<matrix_t> new_matrix;
 
     // Turn it off if m or n are large
-    bool verbose = false;
+    bool verbose = true;
 
-    // Force square behavior for this example; we only run square matrices here.
+    // Arrays
+    std::vector<T> tau(n);
     n = m;
     r = n;
-
-    // Allocate working arrays for the factorization.
-    std::vector<T> tau(n);            // Householder scalar factors
-    std::vector<idx_t> perm(n);       // column permutation vector
-    std::iota(perm.begin(), perm.end(), 0);
-
-    // Allocate matrices used in the example.
+    // Matrix
     std::vector<T> A_;
-    auto A = new_matrix(A_, m, n);          // working matrix for QRCP and QR
+    auto A = new_matrix(A_, m, n);
     std::vector<T> A_orig_;
-    auto A_orig = new_matrix(A_orig_, m, n); // original matrix copy
+    auto A_orig = new_matrix(A_orig_, m, n);
+    std::vector<idx_t> perm(n);
+    std::iota(perm.begin(), perm.end(), 0);
+    std::vector<T> A_perm_;
+    auto A_perm = new_matrix(A_perm_, m, n);
+    std::vector<T> R_;
+    auto R = new_matrix(R_, n, n);
     std::vector<T> B_;
-    auto B = new_matrix(B_, m, n);          // temporary matrix for low-rank generation
+    auto B = new_matrix(B_, m, n);
     std::vector<T> C_;
-    auto C = new_matrix(C_, m, r);          // left factor for low-rank A_orig
+    auto C = new_matrix(C_, m, r);
     std::vector<T> D_;
-    auto D = new_matrix(D_, r, n);          // right factor for low-rank A_orig
-    // std::vector<T> gamma(n);                // Stewart norm estimates
-    // std::vector<T> gamma_init(n);           // Stewart baseline norms
+    auto D = new_matrix(D_, r, n);
     // std::vector<T> Q
 
     // Initialize arrays with junk
@@ -331,8 +230,17 @@ void run(size_t m, size_t n, size_t r)
         tau[j] = static_cast<T>(0xFFBADD11);
     }
 
-    // Build a simple low-rank example matrix A_orig = C * D.
-    // The goal is to create a test matrix with some structure and a known rank.
+    // Generate two random matricies C, size mxr and D, size rxn,
+    // and compute A_orig = C*D, which has rank r.
+    // for (size_t j = 0; j < r; ++j) {
+    //     for (size_t i = 0; i < m; ++i)
+    //         C(i, j) = static_cast<T>(rand()) / static_cast<T>(RAND_MAX);
+    // }
+    // for (size_t j = 0; j < n; ++j) {
+    //     for (size_t i = 0; i < r; ++i)
+    //         D(i, j) = static_cast<T>(rand()) / static_cast<T>(RAND_MAX);
+    // }
+
     tlapack::laset(tlapack::Uplo::General, static_cast<T>(0), static_cast<T>(0),
                    C);
     tlapack::laset(tlapack::Uplo::General, static_cast<T>(0), static_cast<T>(0),
@@ -341,10 +249,9 @@ void run(size_t m, size_t n, size_t r)
     T cosine = static_cast<T>(-1.0 * cos(M_PI / 12));
     T sine = static_cast<T>(sin(M_PI / 12));
 
-    // Fill D with an upper-triangular pattern and C with a diagonal weight.
     tlapack::laset(tlapack::Uplo::Upper, cosine, static_cast<T>(1.0), D);
 
-    // Set C diagonal entries to increasing powers of sine.
+    // set the diagonal of C to an increment of (pi/4)^2
     for (size_t i = 0; i < r; ++i)
         C(i, i) = static_cast<T>(pow(sine, i));
 
@@ -357,70 +264,68 @@ void run(size_t m, size_t n, size_t r)
     tlapack::gemm(tlapack::Op::NoTrans, tlapack::Op::NoTrans, T(1), C, D, T(0),
                   A_orig);
 
-    // Randomly swap one column in A_orig to make the pivoting example more interesting.
+    // swap a random column to the front to make the example more interesting
+    // using tlapack::swap
     idx_t random_col = rand() % n;
     if (random_col != 0)
         for (idx_t i = 0; i < m; ++i)
             std::swap(A_orig(i, 0), A_orig(i, random_col));
 
-    // Run the classic Businger-Golub QRCP algorithm on a copy of the original matrix.
+    // copy matrix A_orig into matrix A
     tlapack::lacpy(tlapack::GENERAL, A_orig, A);
+
+    // Cmopute the QR factorization of A with column pivoting using Businger and
+    // Golub's algorithm.
     qr_bg(A, tau, perm);
 
-    std::cout << std::endl << "--- Businger and Golub QRCP ---";
-    check(A_orig, A, tau, perm);
+    // copy matrix A_orig into matrix B
+    tlapack::lacpy(tlapack::GENERAL, A_orig, B);
 
-    // Run Stewart's QRCP algorithm on the original matrix with a fresh permutation.
-    std::iota(perm.begin(), perm.end(), 0);
-    tlapack::lacpy(tlapack::GENERAL, A_orig, A);
-    qr_stewart(A, tau, perm); //, gamma, gamma_init);
+    check(B, A, tau, perm);
 
-    std::cout << std::endl << "--- Stewart QRCP ---";
-    check(A_orig, A, tau, perm);
-
-    // Apply the final column permutation from Stewart QRCP to the original matrix.
-    // The permuted matrix A now represents AP = A_orig * P.
+    // Permute the columns of A_orig according to the final column pivoting
+    // order
     for (idx_t j = 0; j < n; ++j) {
         for (idx_t i = 0; i < m; ++i) {
-            A(i, j) = A_orig(i, perm[j]);
+            B(i, j) = A_orig(i, perm[j]);
         }
     }
 
-    // Compute the QR factorization of the permuted matrix AP.
-    // This verifies the pivot order by factoring the explicitly permuted matrix.
-    tlapack::geqr2(A, tau);
-    std::cout << std::endl << "Matrix A after geqr2 =";
-    printMatrix(A);
+    // Preserve the final permuted matrix AP before forming the QR factors.
+    // tlapack::lacpy(tlapack::GENERAL, B, A_perm);
+
+    // Compute the QR factorization of the permuted matrix AP using geqr2
+    // (unblocked routine). Use geqrf for the blocked alternative.
+    tlapack::geqr2(B, tau);
+    std::cout << std::endl << "Matrix B after geqr2 =";
+    printMatrix(B);
     std::cout << std::endl;
 
-    // Extract the upper-triangular R factor from the QR result.
-    std::vector<T> R_(n * n);
-    auto R = new_matrix(R_, n, n);
-    tlapack::laset(tlapack::GENERAL, T(0.0), T(0.0), R);
-    tlapack::lacpy(tlapack::UPPER_TRIANGLE, A, R);
+    // Update matrix A with the final QR factorization
+    tlapack::lacpy(tlapack::GENERAL, B, A);
 
-    // Turn the Householder reflectors in A into the explicit orthogonal matrix Q.
-    tlapack::ung2r(A, tau);
+    // Extract the upper-triangular R from the QR factorization for comparison.
+    tlapack::lacpy(tlapack::UPPER_TRIANGLE, B, R);
+
+    // Form the explicit orthogonal matrix Q from the Householder factors.
+    tlapack::ung2r(B, tau);
 
     // Compute the reconstruction accuracy ||AP - Q*R||.
-    std::vector<T> A_perm_(m * n);
-    auto A_perm = new_matrix(A_perm_, m, n);
+    tlapack::gemm(tlapack::Op::NoTrans, tlapack::Op::NoTrans, T(1), B, R, T(0),
+                  C);
     for (idx_t j = 0; j < n; ++j) {
         for (idx_t i = 0; i < m; ++i) {
-            A_perm(i, j) = A_orig(i, perm[j]);
+            C(i, j) = A_perm(i, j) - C(i, j);
         }
     }
-    tlapack::gemm(tlapack::Op::NoTrans, tlapack::Op::NoTrans, T(-1), A, R,
-                  T(1), A_perm);
-    real_t recon_error = tlapack::lange(tlapack::FROB_NORM, A_perm);
+    real_t recon_error = tlapack::lange(tlapack::Norm::One, C);
 
     // Compute the orthogonality error ||I - Q^H Q||.
-    std::vector<T> work_(m * m);
-    auto work = new_matrix(work_, m, m);
-    tlapack::laset(tlapack::GENERAL, T(0.0), T(1.0), work);
-    tlapack::gemm(tlapack::Op::Trans, tlapack::Op::NoTrans, T(-1.0), A, A,
-                  T(1.0), work);
-    real_t orthogonality_error = tlapack::lange(tlapack::FROB_NORM, work);
+    tlapack::syrk(tlapack::Uplo::Upper, tlapack::Op::Trans, T(1), B, T(0), D);
+    for (idx_t j = 0; j < n; ++j)
+        D(j, j) -= static_cast<T>(1);
+    real_t orthogonality_error =
+        tlapack::lansy(tlapack::Norm::One, tlapack::Uplo::Upper, D);
 
     if (verbose) {
         // std::cout << std::endl << "AP (final permuted matrix) =";
@@ -428,6 +333,9 @@ void run(size_t m, size_t n, size_t r)
         // std::cout << std::endl << "R from geqr2 (upper triangle) =";
         // printMatrix(R);
         std::cout << std::endl << "Q from QR factorization =";
+        printMatrix(B);
+        std::cout << std::endl;
+
         printMatrix(A);
         std::cout << std::endl << "---end ------------------------------";
     }
@@ -437,7 +345,7 @@ int main(int argc, char** argv)
 {
     int m, n, r;
 
-    // Read matrix dimensions from command-line arguments, or use defaults.
+    // Default arguments
     m = (argc < 2) ? 7 : atoi(argv[1]);
     n = (argc < 3) ? 7 : atoi(argv[2]);
     r = (argc < 4) ? 3 : atoi(argv[3]);
@@ -470,4 +378,4 @@ int main(int argc, char** argv)
     return 0;
 }
 
-// 
+//
